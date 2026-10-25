@@ -30,7 +30,7 @@ const ballAliases: Record<string, EyeBall> = {
 };
 
 function canonicalStyle<T extends string>(aliases: Record<string, T>, value: string, fallback: T): T {
-  return Object.hasOwn(aliases, value) ? aliases[value] : fallback;
+  return typeof value === 'string' && Object.hasOwn(aliases, value) ? aliases[value] : fallback;
 }
 
 export const logoGallery = [

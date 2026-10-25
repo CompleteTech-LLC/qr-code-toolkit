@@ -49,8 +49,10 @@ describe('saved design compatibility', () => {
     }
   });
 
-  it.each(['unknown', '__proto__', 'constructor', 'toString'])('uses defaults for unrecognized style %s', (invalid) => {
-    const config = normalizeDesignConfig({ body: invalid, eye: invalid, eyeBall: invalid });
+  it.each(['unknown', '__proto__', 'constructor', 'toString', null, 42, ['dot'], { toString: 7 }])('uses defaults for unrecognized style %j', (invalid) => {
+    // API input is untrusted JSON even though TypeScript callers use strings.
+    const value = invalid as unknown as string;
+    const config = normalizeDesignConfig({ body: value, eye: value, eyeBall: value });
     expect(config.body).toBe(defaultDesignConfig.body);
     expect(config.eye).toBe(defaultDesignConfig.eye);
     expect(config.eyeBall).toBe(defaultDesignConfig.eyeBall);
