@@ -28,6 +28,12 @@ In a second terminal, run `npm run dev:web`, then open **http://localhost:5173**
 
 Samples use example addresses. Supply your own destination, media, contact information, Wi-Fi credentials, or wallet address before using a QR code. Scan-test the final export, especially after changing contrast, shapes, or logos.
 
+## Edit a saved QR code
+
+Select a saved QR code, then choose **Edit QR** to load its current content and design into the editor. Update the fields and choose **Update saved QR**; the record and its audit history refresh after saving. Select a content type or cancel editing to return to creating a new record.
+
+A dynamic QR keeps the same encoded link when its destination or landing content changes, so existing prints continue to work. A static QR encodes its content directly: changing that content requires a new print. Design changes also require a new print to appear on the printed code.
+
 ## Build and run
 
 ```sh

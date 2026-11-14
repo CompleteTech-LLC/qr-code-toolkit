@@ -1,9 +1,9 @@
 import { Archive, Download, ImagePlus, Link2, Palette, QrCode, RefreshCw, Save, ShieldCheck } from 'lucide-react';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { bodyShapes, defaultDesignConfig, eyeBalls, eyeFrames, logoGallery, templates } from '../qr/design';
 import { getLogoIcon } from '../qr/logo-icons';
 import { buildPayload } from '../qr/payloads';
-import type { ContentType, DesignConfig, QrMode, QrRecord } from '../shared/types';
+import type { AuditEvent, ContentType, DesignConfig, QrMode, QrRecord } from '../shared/types';
 import { sampleContent } from './sample-content';
 
 const contentTypes: ContentType[] = ['url', 'text', 'email', 'phone', 'sms', 'vcard', 'mecard', 'maps', 'facebook', 'twitter', 'youtube', 'wifi', 'event', 'crypto'];
@@ -21,29 +21,47 @@ export function App() {
   const [keyword, setKeyword] = useState('');
   const [preview, setPreview] = useState('');
   const [downloadData, setDownloadData] = useState('https://example.com');
-  const [error, setError] = useState('');
+  const [errors, setErrors] = useState<Record<string, string>>({});
+  const setError = (operation: string, message: string) => setErrors((current) => ({ ...current, [operation]: message }));
+  const clearDraftErrors = () => setErrors((current) => {
+    const { save, upload, json, ...remaining } = current;
+    return remaining;
+  });
+  const detailRequest = useRef(0);
+  const detailTarget = useRef<string | null>(null);
+  const previewRequest = useRef(0);
+  const recordsRequest = useRef(0);
+  const uploadRequest = useRef(0);
+  const saveRequest = useRef(0);
+  const editingId = useRef<string | null>(null);
+  const editLoadingRef = useRef(false);
+  const [editLoading, setEditLoading] = useState(false);
+  const savePendingRef = useRef(false);
+  const [savePending, setSavePending] = useState(false);
+  const [uploadPending, setUploadPending] = useState(false);
+  const [detailPending, setDetailPending] = useState(false);
+  const [intendedId, setIntendedId] = useState<string | null>(null);
+  const invalidateNavigation = () => { clearDraftErrors(); setError('detail', ''); detailRequest.current++; setDetailPending(false); saveRequest.current++; uploadRequest.current++; setUploadPending(false); editLoadingRef.current = false; setEditLoading(false); editingId.current = null; setKeyword(''); };
   const [records, setRecords] = useState<QrRecord[]>([]);
   const [selected, setSelected] = useState<QrRecord | null>(null);
+  const [auditEvents, setAuditEvents] = useState<AuditEvent[]>([]);
+  const [editing, setEditing] = useState<QrRecord | null>(null);
 
   const encodedPayload = useMemo(() => JSON.stringify(payload, null, 2), [payload]);
 
   useEffect(() => {
-    setPayload(defaults[type]);
-    if (moreTypes.includes(type)) setMode('dynamic_payload');
-  }, [type]);
-
-  useEffect(() => {
     void refreshPreview();
-  }, [payload, design, size]);
+  }, [type, payload, design, size, editing]);
 
   useEffect(() => {
     void loadRecords();
   }, []);
 
   async function refreshPreview() {
+    const request = ++previewRequest.current;
     try {
-      setError('');
-      const data = await buildPreviewPayload(type, payload);
+      const data = editing && editing.mode !== 'static' ? editing.encodedPayload : await buildPreviewPayload(type, payload);
+      if (request !== previewRequest.current) return;
       setDownloadData(data);
       const response = await fetch('/api/qr/custom', {
         method: 'POST',
@@ -51,43 +69,136 @@ export function App() {
         body: JSON.stringify({ data, size, file: 'svg', config: design })
       });
       if (!response.ok) throw new Error((await response.json()).error || 'Preview failed');
-      setPreview(URL.createObjectURL(await response.blob()));
+      const blob = await response.blob();
+      if (request !== previewRequest.current) return;
+      setPreview((old) => { if (old && typeof URL.revokeObjectURL === 'function') URL.revokeObjectURL(old); return URL.createObjectURL(blob); });
+      setError('preview', '');
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Preview failed');
+      if (request === previewRequest.current) setError('preview', err instanceof Error ? err.message : 'Preview failed');
     }
   }
 
   async function saveQr() {
-    const response = await fetch('/api/qr-codes', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name, mode, contentType: type, contentPayload: payload, designConfig: design, sizePx: size, keyword: keyword || undefined })
-    });
-    if (!response.ok) {
-      setError((await response.json()).error || 'Save failed');
-      return;
+    if (savePendingRef.current || uploadPending || editLoadingRef.current) return;
+    savePendingRef.current = true;
+    setSavePending(true);
+    const request = ++saveRequest.current;
+    const id = editingId.current;
+    try {
+      const response = await fetch(id ? `/api/qr-codes/${id}` : '/api/qr-codes', {
+        method: id ? 'PATCH' : 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, mode, contentType: type, contentPayload: payload, designConfig: design, sizePx: size, keyword: keyword || undefined })
+      });
+      if (!response.ok) throw new Error((await response.json()).error || 'Save failed');
+      // A navigation may make the save's UI effects obsolete, but the server
+      // mutation still changes the list and invalidates older list requests.
+      const recordsRefresh = loadRecords();
+      let qr: QrRecord;
+      try {
+        qr = (await response.json()) as QrRecord;
+      } catch (err) {
+        // PATCH already identifies the changed record even if its response is unreadable.
+        if (id && (request === saveRequest.current || detailTarget.current === id)) void loadDetail(id);
+        throw err;
+      }
+      if (request === saveRequest.current) setError('save', '');
+      const shouldLoadDetail = request === saveRequest.current || detailTarget.current === qr.id;
+      const detail = shouldLoadDetail ? await loadDetail(qr.id) : null;
+      if (request === saveRequest.current) {
+        if (id && detail && detail.id === id) setEditing(detail);
+      }
+      await recordsRefresh;
+    } catch (err) {
+      if (request === saveRequest.current) setError('save', err instanceof Error ? err.message : 'Save failed');
+    } finally {
+      savePendingRef.current = false;
+      setSavePending(false);
     }
-    const qr = (await response.json()) as QrRecord;
-    setSelected(qr);
-    await loadRecords();
   }
 
   async function loadRecords() {
-    const response = await fetch('/api/qr-codes');
-    if (response.ok) setRecords(await response.json());
+    const request = ++recordsRequest.current;
+    try {
+      const response = await fetch('/api/qr-codes');
+      if (!response.ok) throw new Error(response.status === 401 ? 'Admin token required. The bundled UI has no token login; configure access through your deployment.' : 'Could not load saved QR codes');
+      const result = await response.json();
+      if (request !== recordsRequest.current) return;
+      setRecords(result);
+      setError('records', '');
+    } catch (err) {
+      if (request === recordsRequest.current) setError('records', err instanceof Error ? err.message : 'Could not load saved QR codes');
+    }
+  }
+
+  async function loadDetail(id: string) {
+    detailTarget.current = id;
+    setIntendedId(id);
+    setDetailPending(true);
+    setError('detail', '');
+    const request = ++detailRequest.current;
+    try {
+      const response = await fetch(`/api/qr-codes/${id}`);
+      if (!response.ok) throw new Error((await response.json()).error || 'Could not load QR code');
+      const detail: { qr: QrRecord; auditEvents: AuditEvent[] } = await response.json();
+      if (request !== detailRequest.current) return null;
+      setError('detail', '');
+      setSelected(detail.qr);
+      setAuditEvents(detail.auditEvents);
+      return detail.qr;
+    } catch (err) {
+      if (request === detailRequest.current) setError('detail', err instanceof Error ? err.message : 'Could not load QR code');
+      return null;
+    } finally {
+      if (request === detailRequest.current) setDetailPending(false);
+    }
+  }
+
+  async function editRecord(id: string) {
+    if (editLoadingRef.current || savePendingRef.current || detailPending || intendedId !== id) return;
+    editLoadingRef.current = true;
+    setEditLoading(true);
+    saveRequest.current++;
+    uploadRequest.current++;
+    setUploadPending(false);
+    const request = detailRequest.current + 1;
+    const record = await loadDetail(id);
+    if (request !== detailRequest.current) return;
+    editLoadingRef.current = false;
+    setEditLoading(false);
+    if (!record) return;
+    clearDraftErrors();
+    uploadRequest.current++;
+    setUploadPending(false);
+    editingId.current = record.id;
+    setType(record.contentType);
+    setMode(record.mode);
+    setName(record.name);
+    setPayload(record.contentPayload);
+    setDesign(record.designConfig);
+    setSize(record.sizePx);
+    setKeyword(record.yourlsKeyword || '');
+    setEditing(record);
   }
 
   async function uploadLogo(file?: File) {
     if (!file) return;
+    const request = ++uploadRequest.current;
+    setUploadPending(true);
     const form = new FormData();
     form.set('file', file);
-    const response = await fetch('/api/qr/upload-image', { method: 'POST', body: form });
-    if (!response.ok) {
-      setError((await response.json()).error || 'Upload failed');
-      return;
+    try {
+      const response = await fetch('/api/qr/upload-image', { method: 'POST', body: form });
+      if (!response.ok) throw new Error((await response.json()).error || 'Upload failed');
+      const result = await response.json();
+      if (request !== uploadRequest.current) return;
+      setDesign((current) => ({ ...current, logo: result.file }));
+      setError('upload', '');
+    } catch (err) {
+      if (request === uploadRequest.current) setError('upload', err instanceof Error ? err.message : 'Upload failed');
+    } finally {
+      if (request === uploadRequest.current) setUploadPending(false);
     }
-    const result = await response.json();
-    setDesign({ ...design, logo: result.file });
   }
 
   return (
@@ -111,7 +222,7 @@ export function App() {
 
         <nav className="type-strip" aria-label="Content type">
           {[...contentTypes, ...moreTypes].map((item) => (
-            <button key={item} className={type === item ? 'chip active' : 'chip'} onClick={() => setType(item)}>
+            <button key={item} className={type === item ? 'chip active' : 'chip'} onClick={() => { invalidateNavigation(); setType(item); setPayload(defaults[item]); if (moreTypes.includes(item)) setMode('dynamic_payload'); setEditing(null); }}>
               {item}
             </button>
           ))}
@@ -127,7 +238,7 @@ export function App() {
                 </label>
                 <label className="field">
                   <span className="field-label">Mode</span>
-                  <select value={mode} onChange={(event) => setMode(event.target.value as QrMode)} disabled={moreTypes.includes(type)}>
+                  <select value={mode} onChange={(event) => setMode(event.target.value as QrMode)} disabled={!!editing || moreTypes.includes(type)}>
                     <option value="static">Static</option>
                     <option value="dynamic_url">Dynamic URL</option>
                     <option value="dynamic_payload">Dynamic payload</option>
@@ -135,13 +246,13 @@ export function App() {
                 </label>
                 <label className="field">
                   <span className="field-label">YOURLS keyword</span>
-                  <input value={keyword} onChange={(event) => setKeyword(event.target.value)} placeholder="optional" disabled={mode === 'static'} />
+                  <input value={keyword} onChange={(event) => setKeyword(event.target.value)} placeholder="optional" disabled={!!editing || mode === 'static'} />
                 </label>
               </div>
               <PayloadEditor type={type} payload={payload} setPayload={setPayload} />
               <details>
                 <summary>Payload JSON</summary>
-                <textarea value={encodedPayload} onChange={(event) => safeJson(event.target.value, setPayload, setError)} />
+                <textarea value={encodedPayload} onChange={(event) => safeJson(event.target.value, setPayload, (message) => setError('json', message))} />
               </details>
             </Panel>
 
@@ -179,7 +290,7 @@ export function App() {
                   <input type="checkbox" checked={design.logoMode === 'clean'} onChange={(event) => setDesign({ ...design, logoMode: event.target.checked ? 'clean' : 'default' })} />
                   <span>Remove background behind logo</span>
                 </label>
-                <button className="btn btn-secondary" onClick={() => setDesign({ ...design, logo: null })}>Remove logo</button>
+                <button className="btn btn-secondary" onClick={() => { uploadRequest.current++; setUploadPending(false); setError('upload', ''); setDesign({ ...design, logo: null }); }}>Remove logo</button>
               </div>
               <div className="shape-list">
                 {logoGallery.map((logo) => (
@@ -187,7 +298,7 @@ export function App() {
                     key={logo}
                     name={logo}
                     active={design.logo === `#${logo}`}
-                    onClick={() => setDesign({ ...design, logo: `#${logo}` })}
+                    onClick={() => { uploadRequest.current++; setUploadPending(false); setError('upload', ''); setDesign({ ...design, logo: `#${logo}` }); }}
                   />
                 ))}
               </div>
@@ -216,7 +327,7 @@ export function App() {
             <Panel eyebrow="TEMPLATES" title="Presets" icon={<QrCode size={16} aria-hidden />}>
               <div className="template-list">
                 {templates.map((template) => (
-                  <button key={template.name} className="chip" onClick={() => setDesign(template.config)}>{template.name}</button>
+                  <button key={template.name} className="chip" onClick={() => { uploadRequest.current++; setUploadPending(false); setError('upload', ''); setDesign(template.config); }}>{template.name}</button>
                 ))}
               </div>
             </Panel>
@@ -231,13 +342,15 @@ export function App() {
               <span className="field-label">Size · {size}px</span>
               <input type="range" min="200" max="2000" step="25" value={size} onChange={(event) => setSize(Number(event.target.value))} />
             </label>
-            {error && <div className="error" role="alert">{error}</div>}
+            {Object.entries(errors).filter(([, message]) => message).map(([operation, message]) => <div key={operation} className="error" role="alert">{message}</div>)}
             <div className="actions">
               <button className="btn btn-secondary" onClick={refreshPreview}><RefreshCw size={14} aria-hidden /> Preview</button>
-              <button className="btn btn-primary" onClick={saveQr}><Save size={14} aria-hidden /> Save</button>
+              <button className="btn btn-primary" onClick={saveQr} disabled={savePending || uploadPending || editLoading}><Save size={14} aria-hidden /> {editing ? 'Update saved QR' : 'Save new QR'}</button>
+              {editing && <button className="btn btn-secondary" onClick={() => { invalidateNavigation(); setEditing(null); }}>Cancel editing</button>}
               <a className="btn btn-secondary" href={`/api/qr/custom?data=${encodeURIComponent(downloadData)}&size=${size}&file=png&download=true&config=${encodeURIComponent(JSON.stringify(design))}`}><Download size={14} aria-hidden /> PNG</a>
               {selected && <a className="btn btn-secondary" href={`/api/qr-codes/${selected.id}/render?file=svg`}><Download size={14} aria-hidden /> SVG</a>}
             </div>
+            <p className="note">{editing ? `Editing ${editing.name}. ` : ''}Changing a dynamic destination keeps the printed QR working. Changing a static payload requires printing the new QR. Design changes require a new print to show the new design.</p>
             <p className="note">SVG downloads use the selected saved design. Save your edits first to include them. PNG uses standard square modules and foreground/background colors; shapes, eye colors, gradients, and logos are SVG-only. PDF and EPS export are unavailable.</p>
           </aside>
         </section>
@@ -248,14 +361,14 @@ export function App() {
         <h2><Archive size={18} aria-hidden /> Saved QR codes</h2>
         <div className="records">
           {records.map((record) => (
-            <button key={record.id} className={selected?.id === record.id ? 'record active' : 'record'} onClick={() => setSelected(record)}>
+            <button key={record.id} className={selected?.id === record.id ? 'record active' : 'record'} onClick={() => { invalidateNavigation(); setEditing(null); void loadDetail(record.id); }}>
               <span className="record-name">{record.name}</span>
               <small className="record-meta">{record.contentType} · {record.mode}</small>
               <small className="record-payload">{record.yourlsShortUrl || record.encodedPayload.slice(0, 60)}</small>
             </button>
           ))}
         </div>
-        {selected && <SelectedRecord record={selected} reload={loadRecords} />}
+        {selected && <SelectedRecord record={selected} auditEvents={auditEvents} savePending={savePending || editLoading || detailPending || intendedId !== selected.id} edit={() => void editRecord(selected.id)} reload={() => editLoadingRef.current ? Promise.resolve(null) : loadDetail(selected.id)} />}
       </section>
     </main>
   );
@@ -326,22 +439,32 @@ function PayloadEditor({ type, payload, setPayload }: { type: ContentType; paylo
   );
 }
 
-function SelectedRecord({ record, reload }: { record: QrRecord; reload: () => Promise<void> }) {
+function SelectedRecord({ record, auditEvents, savePending, edit, reload }: { record: QrRecord; auditEvents: AuditEvent[]; savePending: boolean; edit: () => void; reload: () => Promise<QrRecord | null> }) {
   const [stats, setStats] = useState<Record<string, unknown> | null>(null);
   useEffect(() => {
-    void fetch(`/api/qr-codes/${record.id}/stats`).then((r) => r.json()).then(setStats);
+    let active = true;
+    setStats(null);
+    void fetch(`/api/qr-codes/${record.id}/stats`).then((r) => r.json()).then((value) => { if (active) setStats(value); }).catch(() => { if (active) setStats(null); });
+    return () => { active = false; };
   }, [record.id]);
   return (
     <div className="selected">
       <p className="eyebrow">RECORD</p>
       <h3>{record.name}</h3>
-      <img src={`/api/qr-codes/${record.id}/render?file=svg`} alt="" />
+      <img src={`/api/qr-codes/${record.id}/render?file=svg&updated=${encodeURIComponent(record.updatedAt)}`} alt="" />
       <dl>
         <dt>Short URL</dt><dd>{record.yourlsShortUrl || 'Static QR'}</dd>
         <dt>Encoded payload</dt><dd>{record.encodedPayload}</dd>
         <dt>Stats</dt><dd>{JSON.stringify(stats)}</dd>
       </dl>
-      <button className="btn btn-secondary" onClick={reload}>Refresh list</button>
+      <button className="btn btn-secondary" onClick={edit} disabled={savePending}>Edit QR</button>
+      <button className="btn btn-secondary" onClick={() => void reload()} disabled={savePending}>Refresh record</button>
+      <h4>Audit history</h4>
+      {auditEvents.length === 0 ? <p>No audit events.</p> : <ul>{auditEvents.map((event) => (
+        <li key={event.id}><time dateTime={event.createdAt}>{event.createdAt}</time> · {event.eventType} · {event.actorId}
+          <details><summary>Changes</summary><pre>{JSON.stringify({ previous: event.previous, next: event.next }, null, 2)}</pre></details>
+        </li>
+      ))}</ul>}
     </div>
   );
 }
