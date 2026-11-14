@@ -451,3 +451,91 @@ it('clears a failed patch when navigating to another edit while retaining a list
     expect(container.textContent).toContain('Admin token required');
   } finally { await act(async () => { root.unmount(); }); }
 });
+
+it.each(['success', 'failure', 'navigation'])('does not edit the previous selection while the new detail has %s', async (outcome) => {
+  const a = { ...record, id: 'a', name: 'Record A' };
+  const b = { ...record, id: 'b', name: 'Record B' };
+  let resolveB!: (value: unknown) => void;
+  const pending = new Promise((resolve) => { resolveB = resolve; });
+  const fetchMock = vi.fn(async (url: string, options?: RequestInit) => {
+    if (url === '/api/qr/custom') return { ok: true, blob: async () => new Blob(['svg']) };
+    if (url === '/api/qr-codes') return { ok: true, json: async () => [a, b] };
+    if (url.endsWith('/stats')) return { ok: true, json: async () => ({}) };
+    if (options?.method === 'PATCH') return { ok: true, json: async () => b };
+    if (url === '/api/qr-codes/b') return pending;
+    return { ok: true, json: async () => ({ qr: a, auditEvents: [] }) };
+  });
+  vi.stubGlobal('fetch', fetchMock); vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true); URL.createObjectURL = vi.fn(() => 'blob:preview');
+  const container = document.createElement('div'); document.body.append(container); const root = createRoot(container);
+  const flush = async () => { await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); }); };
+  const button = (text: string) => [...container.querySelectorAll('button')].find((item) => item.textContent?.includes(text))!;
+  const click = async (text: string) => { await act(async () => { button(text).click(); }); await flush(); };
+  try {
+    await act(async () => { root.render(React.createElement(App)); }); await flush();
+    await click('Record A'); await click('Record B');
+    expect(button('Edit QR').disabled).toBe(true);
+    expect(button('Refresh record').disabled).toBe(true);
+    await click('Edit QR');
+    expect(fetchMock.mock.calls.filter(([url]) => url === '/api/qr-codes/a')).toHaveLength(1);
+    if (outcome === 'navigation') await click('text');
+    await act(async () => { resolveB(outcome === 'failure' ? { ok: false, json: async () => ({ error: 'B unavailable' }) } : { ok: true, json: async () => ({ qr: b, auditEvents: [] }) }); }); await flush();
+    if (outcome === 'success') {
+      expect(container.querySelector('.selected h3')?.textContent).toBe('Record B');
+      await click('Edit QR'); await click('Update saved QR');
+      expect(fetchMock.mock.calls.find(([, options]) => options?.method === 'PATCH')?.[0]).toBe('/api/qr-codes/b');
+    } else {
+      expect(button('Edit QR').disabled).toBe(true);
+      expect(container.textContent).not.toContain('Editing Record A');
+      if (outcome === 'failure') expect(container.textContent).toContain('B unavailable');
+      await click('Record A');
+      expect(button('Edit QR').disabled).toBe(false);
+    }
+  } finally { await act(async () => { root.unmount(); }); }
+});
+
+it.each(['facebook', 'Remove logo', 'template'])('clears an upload error when replacing the logo with %s', async (replacement) => {
+  vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+    if (url === '/api/qr-codes') return { ok: false, status: 401 };
+    if (url === '/api/qr/upload-image') return { ok: false, json: async () => ({ error: 'Upload rejected' }) };
+    return { ok: true, blob: async () => new Blob(['svg']) };
+  }));
+  vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true); URL.createObjectURL = vi.fn(() => 'blob:preview');
+  const container = document.createElement('div'); document.body.append(container); const root = createRoot(container);
+  const flush = async () => { await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); }); };
+  try {
+    await act(async () => { root.render(React.createElement(App)); }); await flush();
+    const input = container.querySelector('input[type=file]') as HTMLInputElement;
+    Object.defineProperty(input, 'files', { configurable: true, value: [new File(['logo'], 'logo.png')] });
+    await act(async () => { input.dispatchEvent(new Event('change', { bubbles: true })); }); await flush();
+    expect(container.textContent).toContain('Upload rejected');
+    const target = replacement === 'template' ? container.querySelector<HTMLButtonElement>('.template-list button') : [...container.querySelectorAll('button')].find((b) => b.textContent?.trim() === replacement);
+    expect(target).toBeTruthy();
+    await act(async () => { target!.click(); }); await flush();
+    expect(container.textContent).not.toContain('Upload rejected');
+    expect(container.textContent).toContain('Admin token required');
+  } finally { await act(async () => { root.unmount(); }); }
+});
+
+it('clears abandoned detail errors on content navigation while retaining list authentication errors', async () => {
+  let listCalls = 0;
+  vi.stubGlobal('fetch', vi.fn(async (url: string, options?: RequestInit) => {
+    if (url === '/api/qr/custom') return { ok: true, blob: async () => new Blob(['svg']) };
+    if (url.endsWith('/stats')) return { ok: true, json: async () => ({}) };
+    if (options?.method === 'POST') return { ok: true, json: async () => record };
+    if (url === '/api/qr-codes') return ++listCalls === 1 ? { ok: true, json: async () => [record] } : { ok: false, status: 401 };
+    return { ok: false, json: async () => ({ error: 'Detail unavailable' }) };
+  }));
+  vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true); URL.createObjectURL = vi.fn(() => 'blob:preview');
+  const container = document.createElement('div'); document.body.append(container); const root = createRoot(container);
+  const flush = async () => { await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); }); };
+  const click = async (text: string) => { const button = [...container.querySelectorAll('button')].find((b) => b.textContent?.trim() === text)!; await act(async () => { button.click(); }); await flush(); };
+  try {
+    await act(async () => { root.render(React.createElement(App)); }); await flush();
+    await click('Save new QR');
+    expect(container.textContent).toContain('Detail unavailable');
+    expect(container.textContent).toContain('Admin token required');
+    await click('text');
+    expect(container.textContent).not.toContain('Detail unavailable');
+    expect(container.textContent).toContain('Admin token required');
+  } finally { await act(async () => { root.unmount(); }); }
+});

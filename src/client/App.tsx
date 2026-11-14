@@ -39,7 +39,9 @@ export function App() {
   const savePendingRef = useRef(false);
   const [savePending, setSavePending] = useState(false);
   const [uploadPending, setUploadPending] = useState(false);
-  const invalidateNavigation = () => { clearDraftErrors(); detailRequest.current++; saveRequest.current++; uploadRequest.current++; setUploadPending(false); editLoadingRef.current = false; setEditLoading(false); editingId.current = null; setKeyword(''); };
+  const [detailPending, setDetailPending] = useState(false);
+  const [intendedId, setIntendedId] = useState<string | null>(null);
+  const invalidateNavigation = () => { clearDraftErrors(); setError('detail', ''); detailRequest.current++; setDetailPending(false); saveRequest.current++; uploadRequest.current++; setUploadPending(false); editLoadingRef.current = false; setEditLoading(false); editingId.current = null; setKeyword(''); };
   const [records, setRecords] = useState<QrRecord[]>([]);
   const [selected, setSelected] = useState<QrRecord | null>(null);
   const [auditEvents, setAuditEvents] = useState<AuditEvent[]>([]);
@@ -131,6 +133,9 @@ export function App() {
 
   async function loadDetail(id: string) {
     detailTarget.current = id;
+    setIntendedId(id);
+    setDetailPending(true);
+    setError('detail', '');
     const request = ++detailRequest.current;
     try {
       const response = await fetch(`/api/qr-codes/${id}`);
@@ -144,11 +149,13 @@ export function App() {
     } catch (err) {
       if (request === detailRequest.current) setError('detail', err instanceof Error ? err.message : 'Could not load QR code');
       return null;
+    } finally {
+      if (request === detailRequest.current) setDetailPending(false);
     }
   }
 
   async function editRecord(id: string) {
-    if (editLoadingRef.current || savePendingRef.current) return;
+    if (editLoadingRef.current || savePendingRef.current || detailPending || intendedId !== id) return;
     editLoadingRef.current = true;
     setEditLoading(true);
     saveRequest.current++;
@@ -283,7 +290,7 @@ export function App() {
                   <input type="checkbox" checked={design.logoMode === 'clean'} onChange={(event) => setDesign({ ...design, logoMode: event.target.checked ? 'clean' : 'default' })} />
                   <span>Remove background behind logo</span>
                 </label>
-                <button className="btn btn-secondary" onClick={() => { uploadRequest.current++; setUploadPending(false); setDesign({ ...design, logo: null }); }}>Remove logo</button>
+                <button className="btn btn-secondary" onClick={() => { uploadRequest.current++; setUploadPending(false); setError('upload', ''); setDesign({ ...design, logo: null }); }}>Remove logo</button>
               </div>
               <div className="shape-list">
                 {logoGallery.map((logo) => (
@@ -291,7 +298,7 @@ export function App() {
                     key={logo}
                     name={logo}
                     active={design.logo === `#${logo}`}
-                    onClick={() => { uploadRequest.current++; setUploadPending(false); setDesign({ ...design, logo: `#${logo}` }); }}
+                    onClick={() => { uploadRequest.current++; setUploadPending(false); setError('upload', ''); setDesign({ ...design, logo: `#${logo}` }); }}
                   />
                 ))}
               </div>
@@ -320,7 +327,7 @@ export function App() {
             <Panel eyebrow="TEMPLATES" title="Presets" icon={<QrCode size={16} aria-hidden />}>
               <div className="template-list">
                 {templates.map((template) => (
-                  <button key={template.name} className="chip" onClick={() => { uploadRequest.current++; setUploadPending(false); setDesign(template.config); }}>{template.name}</button>
+                  <button key={template.name} className="chip" onClick={() => { uploadRequest.current++; setUploadPending(false); setError('upload', ''); setDesign(template.config); }}>{template.name}</button>
                 ))}
               </div>
             </Panel>
@@ -361,7 +368,7 @@ export function App() {
             </button>
           ))}
         </div>
-        {selected && <SelectedRecord record={selected} auditEvents={auditEvents} savePending={savePending || editLoading} edit={() => void editRecord(selected.id)} reload={() => editLoadingRef.current ? Promise.resolve(null) : loadDetail(selected.id)} />}
+        {selected && <SelectedRecord record={selected} auditEvents={auditEvents} savePending={savePending || editLoading || detailPending || intendedId !== selected.id} edit={() => void editRecord(selected.id)} reload={() => editLoadingRef.current ? Promise.resolve(null) : loadDetail(selected.id)} />}
       </section>
     </main>
   );
@@ -451,7 +458,7 @@ function SelectedRecord({ record, auditEvents, savePending, edit, reload }: { re
         <dt>Stats</dt><dd>{JSON.stringify(stats)}</dd>
       </dl>
       <button className="btn btn-secondary" onClick={edit} disabled={savePending}>Edit QR</button>
-      <button className="btn btn-secondary" onClick={() => void reload()}>Refresh record</button>
+      <button className="btn btn-secondary" onClick={() => void reload()} disabled={savePending}>Refresh record</button>
       <h4>Audit history</h4>
       {auditEvents.length === 0 ? <p>No audit events.</p> : <ul>{auditEvents.map((event) => (
         <li key={event.id}><time dateTime={event.createdAt}>{event.createdAt}</time> · {event.eventType} · {event.actorId}
