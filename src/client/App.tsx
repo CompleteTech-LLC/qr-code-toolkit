@@ -238,7 +238,7 @@ export function App() {
               <a className="btn btn-secondary" href={`/api/qr/custom?data=${encodeURIComponent(downloadData)}&size=${size}&file=png&download=true&config=${encodeURIComponent(JSON.stringify(design))}`}><Download size={14} aria-hidden /> PNG</a>
               {selected && <a className="btn btn-secondary" href={`/api/qr-codes/${selected.id}/render?file=svg`}><Download size={14} aria-hidden /> SVG</a>}
             </div>
-            <p className="note">PDF and EPS are intentionally disabled in this MVP — print renderer is the next phase.</p>
+            <p className="note">SVG downloads use the selected saved design. Save your edits first to include them. PNG uses standard square modules and foreground/background colors; shapes, eye colors, gradients, and logos are SVG-only. PDF and EPS export are unavailable.</p>
           </aside>
         </section>
       </section>

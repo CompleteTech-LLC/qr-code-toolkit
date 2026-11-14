@@ -118,13 +118,13 @@ function drawBodyModule(x: number, y: number, unit: number, fill: string, shape:
   const size = unit - pad * 2;
   const cx = x + unit / 2;
   const cy = y + unit / 2;
-  if (['dot', 'circle', 'circular', 'circle-zebra', 'circle-zebra-vertical'].includes(shape)) {
+  if (shape === 'dot') {
     return `<circle cx="${cx}" cy="${cy}" r="${size / 2}" fill="${fill}"/>`;
   }
-  if (['diamond', 'star', 'pointed', 'pointed-smooth', 'pointed-edge-cut'].includes(shape)) {
+  if (shape === 'diamond') {
     return `<path d="M${cx} ${y + pad}L${x + unit - pad} ${cy}L${cx} ${y + unit - pad}L${x + pad} ${cy}Z" fill="${fill}"/>`;
   }
-  const radius = ['round', 'rounded-in', 'rounded-in-smooth', 'rounded-pointed', 'mosaic', 'leaf'].includes(shape) ? unit * 0.26 : ['edge-cut', 'edge-cut-smooth', 'pointed-in', 'pointed-in-smooth'].includes(shape) ? unit * 0.12 : 0;
+  const radius = shape === 'round' ? unit * 0.26 : shape === 'edge-cut' ? unit * 0.12 : 0;
   return `<rect x="${x + pad}" y="${y + pad}" width="${size}" height="${size}" rx="${radius}" fill="${fill}"/>`;
 }
 
@@ -132,8 +132,8 @@ function drawEye(x: number, y: number, unit: number, frameColor: string, ballCol
   const outer = unit * 7;
   const inner = unit * 3;
   const innerOffset = unit * 2;
-  const frameRadius = ['frame5', 'frame6', 'frame7', 'frame8', 'frame13', 'frame14', 'frame16'].includes(design.eye) ? unit * 1.3 : ['frame1', 'frame2', 'frame3'].includes(design.eye) ? unit * 0.5 : 0;
-  const ballRound = ['ball5', 'ball6', 'ball7', 'ball8', 'ball10', 'ball11', 'ball14', 'ball15', 'ball16', 'ball17', 'ball18', 'ball19'].includes(design.eyeBall);
+  const frameRadius = design.eye === 'frame5' ? unit * 1.3 : design.eye === 'frame1' ? unit * 0.5 : 0;
+  const ballRound = design.eyeBall === 'ball5';
   return [
     `<rect x="${x}" y="${y}" width="${outer}" height="${outer}" rx="${frameRadius}" fill="${frameColor}"/>`,
     `<rect x="${x + unit}" y="${y + unit}" width="${unit * 5}" height="${unit * 5}" rx="${frameRadius / 1.5}" fill="${design.bgColor}"/>`,

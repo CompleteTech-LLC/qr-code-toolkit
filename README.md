@@ -19,7 +19,7 @@ In a second terminal, run `npm run dev:web`, then open **http://localhost:5173**
 ## Features
 
 - URL, text, email, phone, SMS, vCard, MeCard, map, Wi-Fi, event, social, and cryptocurrency payload builders.
-- SVG designs with colors, gradients, module shapes, templates, and built-in or uploaded logos.
+- SVG designs with colors, gradients, five distinct body shapes, three eye frames, two eye balls, templates, and built-in or uploaded logos.
 - PNG export using standard QR modules and foreground/background colors.
 - Saved QR records, editable dynamic destinations, and audit history.
 - Landing pages for audio, video, PDFs, social links, app links, galleries, ratings, and feedback.
@@ -78,7 +78,7 @@ Smoke output is written to ignored `.local/smoke/`. [Contributions](CONTRIBUTING
 
 This is a single-user, single-process application, not a multi-tenant hosted service. JSON storage has no transactional or multi-process guarantees. Back up the data file and uploads; use a database before scaling.
 
-PNG exports do not include SVG shape, gradient, or logo styling. PDF/EPS export is not implemented. Uploaded logo references in SVG exports need a reachable asset URL and are not embedded for offline portability. Some shape presets share an underlying rendering style. YOURLS statistics require a configured instance; local fallback statistics report zero. The included YOURLS plugin is an optional integration scaffold.
+PNG exports do not include SVG shape, gradient, or logo styling. PDF/EPS export is not implemented. Uploaded logo references in SVG exports need a reachable asset URL and are not embedded for offline portability. The picker exposes only distinct rendering styles. Legacy shape names in saved records and API requests remain accepted as aliases of the same geometry; templates use canonical picker values. Legacy `erf*`/`brf*` eye-flip fields are retained for compatibility but have no rendering effect and are not exposed as controls. YOURLS statistics require a configured instance; local fallback statistics report zero. The included YOURLS plugin is an optional integration scaffold.
 
 Google Fonts and user-configured media can cause browser requests to external services. No deployment credentials, private infrastructure configuration, generated data, or source repository history are included.
 

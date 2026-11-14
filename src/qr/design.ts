@@ -1,68 +1,37 @@
 import type { DesignConfig } from '../shared/types';
 
-export const bodyShapes = [
-  'square',
-  'mosaic',
-  'dot',
-  'circle',
-  'circle-zebra',
-  'circle-zebra-vertical',
-  'circular',
-  'edge-cut',
-  'edge-cut-smooth',
-  'japnese',
-  'leaf',
-  'pointed',
-  'pointed-edge-cut',
-  'pointed-in',
-  'pointed-in-smooth',
-  'pointed-smooth',
-  'round',
-  'rounded-in',
-  'rounded-in-smooth',
-  'rounded-pointed',
-  'star',
-  'diamond'
-] as const;
+// Only advertise styles with distinct geometry. Legacy names remain accepted
+// below so existing saved designs and API clients keep the same appearance.
+export const bodyShapes = ['square', 'dot', 'edge-cut', 'round', 'diamond'] as const;
+export const eyeFrames = ['frame0', 'frame1', 'frame5'] as const;
+export const eyeBalls = ['ball0', 'ball5'] as const;
 
-export const eyeFrames = [
-  'frame0',
-  'frame1',
-  'frame2',
-  'frame3',
-  'frame4',
-  'frame5',
-  'frame6',
-  'frame7',
-  'frame8',
-  'frame10',
-  'frame11',
-  'frame12',
-  'frame13',
-  'frame14',
-  'frame16'
-] as const;
+type BodyShape = typeof bodyShapes[number];
+type EyeFrame = typeof eyeFrames[number];
+type EyeBall = typeof eyeBalls[number];
 
-export const eyeBalls = [
-  'ball0',
-  'ball1',
-  'ball2',
-  'ball3',
-  'ball5',
-  'ball6',
-  'ball7',
-  'ball8',
-  'ball10',
-  'ball11',
-  'ball12',
-  'ball13',
-  'ball14',
-  'ball15',
-  'ball16',
-  'ball17',
-  'ball18',
-  'ball19'
-] as const;
+const bodyAliases: Record<string, BodyShape> = {
+  square: 'square', japnese: 'square',
+  dot: 'dot', circle: 'dot', circular: 'dot', 'circle-zebra': 'dot', 'circle-zebra-vertical': 'dot',
+  'edge-cut': 'edge-cut', 'edge-cut-smooth': 'edge-cut', 'pointed-in': 'edge-cut', 'pointed-in-smooth': 'edge-cut',
+  round: 'round', 'rounded-in': 'round', 'rounded-in-smooth': 'round', 'rounded-pointed': 'round', mosaic: 'round', leaf: 'round',
+  diamond: 'diamond', star: 'diamond', pointed: 'diamond', 'pointed-smooth': 'diamond', 'pointed-edge-cut': 'diamond'
+};
+
+const frameAliases: Record<string, EyeFrame> = {
+  frame0: 'frame0', frame4: 'frame0', frame10: 'frame0', frame11: 'frame0', frame12: 'frame0',
+  frame1: 'frame1', frame2: 'frame1', frame3: 'frame1',
+  frame5: 'frame5', frame6: 'frame5', frame7: 'frame5', frame8: 'frame5', frame13: 'frame5', frame14: 'frame5', frame16: 'frame5'
+};
+
+const ballAliases: Record<string, EyeBall> = {
+  ball0: 'ball0', ball1: 'ball0', ball2: 'ball0', ball3: 'ball0', ball12: 'ball0', ball13: 'ball0',
+  ball5: 'ball5', ball6: 'ball5', ball7: 'ball5', ball8: 'ball5', ball10: 'ball5', ball11: 'ball5', ball14: 'ball5', ball15: 'ball5', ball16: 'ball5', ball17: 'ball5', ball18: 'ball5', ball19: 'ball5'
+};
+
+function canonicalStyle<T extends string>(aliases: Record<string, T>, value: string, fallback: T): T {
+  return typeof value === 'string' && Object.hasOwn(aliases, value) ? aliases[value] : fallback;
+}
 
 export const logoGallery = [
   'ctech-mark',
@@ -118,7 +87,7 @@ export const defaultDesignConfig: DesignConfig = {
   logoMode: 'default'
 };
 
-export const templates: Array<{ name: string; config: DesignConfig }> = [
+const templatePresets: Array<{ name: string; config: DesignConfig }> = [
   { name: 'Classic', config: { ...defaultDesignConfig } },
   {
     name: 'CompleteTech',
@@ -339,6 +308,8 @@ export const templates: Array<{ name: string; config: DesignConfig }> = [
   }
 ];
 
+export const templates = templatePresets.map(({ name, config }) => ({ name, config: normalizeDesignConfig(config) }));
+
 export function normalizeDesignConfig(input: Partial<DesignConfig> = {}): DesignConfig {
   const merged = { ...defaultDesignConfig, ...input };
   for (const key of ['bgColor', 'bodyColor', 'eye1Color', 'eye2Color', 'eye3Color', 'eyeBall1Color', 'eyeBall2Color', 'eyeBall3Color', 'gradientColor1', 'gradientColor2'] as const) {
@@ -350,9 +321,9 @@ export function normalizeDesignConfig(input: Partial<DesignConfig> = {}): Design
   }
   return {
     ...merged,
-    body: bodyShapes.includes(merged.body as never) ? merged.body : defaultDesignConfig.body,
-    eye: eyeFrames.includes(merged.eye as never) ? merged.eye : defaultDesignConfig.eye,
-    eyeBall: eyeBalls.includes(merged.eyeBall as never) ? merged.eyeBall : defaultDesignConfig.eyeBall,
+    body: canonicalStyle(bodyAliases, merged.body, 'square'),
+    eye: canonicalStyle(frameAliases, merged.eye, 'frame0'),
+    eyeBall: canonicalStyle(ballAliases, merged.eyeBall, 'ball0'),
     gradientType: merged.gradientType === 'radial' ? 'radial' : 'linear',
     logoMode: merged.logoMode === 'clean' ? 'clean' : 'default'
   };
