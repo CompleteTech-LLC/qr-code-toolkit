@@ -23,6 +23,10 @@ export function App() {
   const [downloadData, setDownloadData] = useState('https://example.com');
   const [errors, setErrors] = useState<Record<string, string>>({});
   const setError = (operation: string, message: string) => setErrors((current) => ({ ...current, [operation]: message }));
+  const clearDraftErrors = () => setErrors((current) => {
+    const { save, upload, json, ...remaining } = current;
+    return remaining;
+  });
   const detailRequest = useRef(0);
   const detailTarget = useRef<string | null>(null);
   const previewRequest = useRef(0);
@@ -35,7 +39,7 @@ export function App() {
   const savePendingRef = useRef(false);
   const [savePending, setSavePending] = useState(false);
   const [uploadPending, setUploadPending] = useState(false);
-  const invalidateNavigation = () => { detailRequest.current++; saveRequest.current++; uploadRequest.current++; setUploadPending(false); editLoadingRef.current = false; setEditLoading(false); editingId.current = null; setKeyword(''); };
+  const invalidateNavigation = () => { clearDraftErrors(); detailRequest.current++; saveRequest.current++; uploadRequest.current++; setUploadPending(false); editLoadingRef.current = false; setEditLoading(false); editingId.current = null; setKeyword(''); };
   const [records, setRecords] = useState<QrRecord[]>([]);
   const [selected, setSelected] = useState<QrRecord | null>(null);
   const [auditEvents, setAuditEvents] = useState<AuditEvent[]>([]);
@@ -156,6 +160,7 @@ export function App() {
     editLoadingRef.current = false;
     setEditLoading(false);
     if (!record) return;
+    clearDraftErrors();
     uploadRequest.current++;
     setUploadPending(false);
     editingId.current = record.id;
