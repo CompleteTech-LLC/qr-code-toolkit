@@ -3,7 +3,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { bodyShapes, defaultDesignConfig, eyeBalls, eyeFrames, logoGallery, templates } from '../qr/design';
 import { getLogoIcon } from '../qr/logo-icons';
 import { buildPayload } from '../qr/payloads';
-import type { ContentType, DesignConfig, QrMode, QrRecord } from '../shared/types';
+import type { AuditEvent, ContentType, DesignConfig, QrMode, QrRecord } from '../shared/types';
 import { sampleContent } from './sample-content';
 
 const contentTypes: ContentType[] = ['url', 'text', 'email', 'phone', 'sms', 'vcard', 'mecard', 'maps', 'facebook', 'twitter', 'youtube', 'wifi', 'event', 'crypto'];
@@ -24,17 +24,14 @@ export function App() {
   const [error, setError] = useState('');
   const [records, setRecords] = useState<QrRecord[]>([]);
   const [selected, setSelected] = useState<QrRecord | null>(null);
+  const [auditEvents, setAuditEvents] = useState<AuditEvent[]>([]);
+  const [editing, setEditing] = useState(false);
 
   const encodedPayload = useMemo(() => JSON.stringify(payload, null, 2), [payload]);
 
   useEffect(() => {
-    setPayload(defaults[type]);
-    if (moreTypes.includes(type)) setMode('dynamic_payload');
-  }, [type]);
-
-  useEffect(() => {
     void refreshPreview();
-  }, [payload, design, size]);
+  }, [type, payload, design, size, editing, selected?.encodedPayload]);
 
   useEffect(() => {
     void loadRecords();
@@ -42,8 +39,7 @@ export function App() {
 
   async function refreshPreview() {
     try {
-      setError('');
-      const data = await buildPreviewPayload(type, payload);
+      const data = editing && selected && selected.mode !== 'static' ? selected.encodedPayload : await buildPreviewPayload(type, payload);
       setDownloadData(data);
       const response = await fetch('/api/qr/custom', {
         method: 'POST',
@@ -58,8 +54,8 @@ export function App() {
   }
 
   async function saveQr() {
-    const response = await fetch('/api/qr-codes', {
-      method: 'POST',
+    const response = await fetch(editing && selected ? `/api/qr-codes/${selected.id}` : '/api/qr-codes', {
+      method: editing && selected ? 'PATCH' : 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ name, mode, contentType: type, contentPayload: payload, designConfig: design, sizePx: size, keyword: keyword || undefined })
     });
@@ -68,13 +64,45 @@ export function App() {
       return;
     }
     const qr = (await response.json()) as QrRecord;
-    setSelected(qr);
+    await loadDetail(qr.id);
     await loadRecords();
   }
 
   async function loadRecords() {
-    const response = await fetch('/api/qr-codes');
-    if (response.ok) setRecords(await response.json());
+    try {
+      const response = await fetch('/api/qr-codes');
+      if (!response.ok) throw new Error(response.status === 401 ? 'Admin token required. The bundled UI has no token login; configure access through your deployment.' : 'Could not load saved QR codes');
+      setRecords(await response.json());
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not load saved QR codes');
+    }
+  }
+
+  async function loadDetail(id: string) {
+    try {
+      const response = await fetch(`/api/qr-codes/${id}`);
+      if (!response.ok) throw new Error((await response.json()).error || 'Could not load QR code');
+      const detail: { qr: QrRecord; auditEvents: AuditEvent[] } = await response.json();
+      setSelected(detail.qr);
+      setAuditEvents(detail.auditEvents);
+      return detail.qr;
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not load QR code');
+      return null;
+    }
+  }
+
+  async function editRecord(id: string) {
+    const record = await loadDetail(id);
+    if (!record) return;
+    setType(record.contentType);
+    setMode(record.mode);
+    setName(record.name);
+    setPayload(record.contentPayload);
+    setDesign(record.designConfig);
+    setSize(record.sizePx);
+    setKeyword(record.yourlsKeyword || '');
+    setEditing(true);
   }
 
   async function uploadLogo(file?: File) {
@@ -111,7 +139,7 @@ export function App() {
 
         <nav className="type-strip" aria-label="Content type">
           {[...contentTypes, ...moreTypes].map((item) => (
-            <button key={item} className={type === item ? 'chip active' : 'chip'} onClick={() => setType(item)}>
+            <button key={item} className={type === item ? 'chip active' : 'chip'} onClick={() => { setType(item); setPayload(defaults[item]); if (moreTypes.includes(item)) setMode('dynamic_payload'); setEditing(false); }}>
               {item}
             </button>
           ))}
@@ -127,7 +155,7 @@ export function App() {
                 </label>
                 <label className="field">
                   <span className="field-label">Mode</span>
-                  <select value={mode} onChange={(event) => setMode(event.target.value as QrMode)} disabled={moreTypes.includes(type)}>
+                  <select value={mode} onChange={(event) => setMode(event.target.value as QrMode)} disabled={editing || moreTypes.includes(type)}>
                     <option value="static">Static</option>
                     <option value="dynamic_url">Dynamic URL</option>
                     <option value="dynamic_payload">Dynamic payload</option>
@@ -135,7 +163,7 @@ export function App() {
                 </label>
                 <label className="field">
                   <span className="field-label">YOURLS keyword</span>
-                  <input value={keyword} onChange={(event) => setKeyword(event.target.value)} placeholder="optional" disabled={mode === 'static'} />
+                  <input value={keyword} onChange={(event) => setKeyword(event.target.value)} placeholder="optional" disabled={editing || mode === 'static'} />
                 </label>
               </div>
               <PayloadEditor type={type} payload={payload} setPayload={setPayload} />
@@ -234,10 +262,12 @@ export function App() {
             {error && <div className="error" role="alert">{error}</div>}
             <div className="actions">
               <button className="btn btn-secondary" onClick={refreshPreview}><RefreshCw size={14} aria-hidden /> Preview</button>
-              <button className="btn btn-primary" onClick={saveQr}><Save size={14} aria-hidden /> Save</button>
+              <button className="btn btn-primary" onClick={saveQr}><Save size={14} aria-hidden /> {editing ? 'Update saved QR' : 'Save new QR'}</button>
+              {editing && <button className="btn btn-secondary" onClick={() => setEditing(false)}>Cancel editing</button>}
               <a className="btn btn-secondary" href={`/api/qr/custom?data=${encodeURIComponent(downloadData)}&size=${size}&file=png&download=true&config=${encodeURIComponent(JSON.stringify(design))}`}><Download size={14} aria-hidden /> PNG</a>
               {selected && <a className="btn btn-secondary" href={`/api/qr-codes/${selected.id}/render?file=svg`}><Download size={14} aria-hidden /> SVG</a>}
             </div>
+            <p className="note">{editing ? `Editing ${selected?.name}. ` : ''}Changing a dynamic destination keeps the printed QR working. Changing a static payload requires printing the new QR. Design changes require a new print to show the new design.</p>
             <p className="note">SVG downloads use the selected saved design. Save your edits first to include them. PNG uses standard square modules and foreground/background colors; shapes, eye colors, gradients, and logos are SVG-only. PDF and EPS export are unavailable.</p>
           </aside>
         </section>
@@ -248,14 +278,14 @@ export function App() {
         <h2><Archive size={18} aria-hidden /> Saved QR codes</h2>
         <div className="records">
           {records.map((record) => (
-            <button key={record.id} className={selected?.id === record.id ? 'record active' : 'record'} onClick={() => setSelected(record)}>
+            <button key={record.id} className={selected?.id === record.id ? 'record active' : 'record'} onClick={() => { setEditing(false); void loadDetail(record.id); }}>
               <span className="record-name">{record.name}</span>
               <small className="record-meta">{record.contentType} · {record.mode}</small>
               <small className="record-payload">{record.yourlsShortUrl || record.encodedPayload.slice(0, 60)}</small>
             </button>
           ))}
         </div>
-        {selected && <SelectedRecord record={selected} reload={loadRecords} />}
+        {selected && <SelectedRecord record={selected} auditEvents={auditEvents} edit={() => void editRecord(selected.id)} reload={() => loadDetail(selected.id)} />}
       </section>
     </main>
   );
@@ -326,7 +356,7 @@ function PayloadEditor({ type, payload, setPayload }: { type: ContentType; paylo
   );
 }
 
-function SelectedRecord({ record, reload }: { record: QrRecord; reload: () => Promise<void> }) {
+function SelectedRecord({ record, auditEvents, edit, reload }: { record: QrRecord; auditEvents: AuditEvent[]; edit: () => void; reload: () => Promise<QrRecord | null> }) {
   const [stats, setStats] = useState<Record<string, unknown> | null>(null);
   useEffect(() => {
     void fetch(`/api/qr-codes/${record.id}/stats`).then((r) => r.json()).then(setStats);
@@ -335,13 +365,20 @@ function SelectedRecord({ record, reload }: { record: QrRecord; reload: () => Pr
     <div className="selected">
       <p className="eyebrow">RECORD</p>
       <h3>{record.name}</h3>
-      <img src={`/api/qr-codes/${record.id}/render?file=svg`} alt="" />
+      <img src={`/api/qr-codes/${record.id}/render?file=svg&updated=${encodeURIComponent(record.updatedAt)}`} alt="" />
       <dl>
         <dt>Short URL</dt><dd>{record.yourlsShortUrl || 'Static QR'}</dd>
         <dt>Encoded payload</dt><dd>{record.encodedPayload}</dd>
         <dt>Stats</dt><dd>{JSON.stringify(stats)}</dd>
       </dl>
-      <button className="btn btn-secondary" onClick={reload}>Refresh list</button>
+      <button className="btn btn-secondary" onClick={edit}>Edit QR</button>
+      <button className="btn btn-secondary" onClick={() => void reload()}>Refresh record</button>
+      <h4>Audit history</h4>
+      {auditEvents.length === 0 ? <p>No audit events.</p> : <ul>{auditEvents.map((event) => (
+        <li key={event.id}><time dateTime={event.createdAt}>{event.createdAt}</time> · {event.eventType} · {event.actorId}
+          <details><summary>Changes</summary><pre>{JSON.stringify({ previous: event.previous, next: event.next }, null, 2)}</pre></details>
+        </li>
+      ))}</ul>}
     </div>
   );
 }

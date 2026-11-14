@@ -65,6 +65,29 @@ describe('API', () => {
     expect(detail.body.auditEvents.length).toBeGreaterThanOrEqual(2);
   });
 
+  it('updates dynamic landing content and static encoded payloads', async () => {
+    const dynamic = await request(app).post('/api/qr-codes').send({
+      name: 'Landing', mode: 'dynamic_payload', contentType: 'social',
+      contentPayload: { title: 'Before', links: [{ label: 'Example', url: 'https://example.com/before' }] }
+    });
+    const updated = await request(app).patch(`/api/qr-codes/${dynamic.body.id}`).send({
+      name: 'Updated landing', contentPayload: { title: 'After', links: [{ label: 'Example', url: 'https://example.com/after' }] }
+    });
+    expect(updated.status).toBe(200);
+    expect(updated.body.encodedPayload).toBe(dynamic.body.encodedPayload);
+    expect((await request(app).get(`/l/${dynamic.body.id}`)).text).toContain('https://example.com/after');
+    const detail = await request(app).get(`/api/qr-codes/${dynamic.body.id}`);
+    expect(detail.body.qr.name).toBe('Updated landing');
+    expect(detail.body.auditEvents.some((event: { eventType: string }) => event.eventType === 'updated')).toBe(true);
+
+    const fixed = await request(app).post('/api/qr-codes').send({
+      name: 'Static', mode: 'static', contentType: 'url', contentPayload: { url: 'https://example.com/before' }
+    });
+    const changed = await request(app).patch(`/api/qr-codes/${fixed.body.id}`).send({ contentPayload: { url: 'https://example.com/after' } });
+    expect(changed.body.encodedPayload).toBe('https://example.com/after');
+    expect(changed.body.encodedPayload).not.toBe(fixed.body.encodedPayload);
+  });
+
   it('keeps the created audit snapshot intact after later edits', async () => {
     const created = await request(app).post('/api/qr-codes').send({
       name: 'Audit', mode: 'dynamic_url', contentType: 'url', contentPayload: { url: 'https://example.com/original' }
