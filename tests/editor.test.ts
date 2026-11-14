@@ -101,3 +101,118 @@ it('clears a recovered preview error without hiding a records authentication err
     expect(container.textContent).not.toContain('Preview unavailable'); expect(container.textContent).toContain('Admin token required');
   } finally { await act(async () => { root.unmount(); }); }
 });
+
+it('invalidates a draft logo upload when entering edit mode', async () => {
+  let resolveUpload!: (value: unknown) => void;
+  const upload = new Promise((resolve) => { resolveUpload = resolve; });
+  const saved = { ...record, designConfig: { ...defaultDesignConfig, logo: '#facebook' } };
+  const fetchMock = vi.fn(async (url: string, options?: RequestInit) => {
+    if (url === '/api/qr/custom') return { ok: true, blob: async () => new Blob(['svg']) };
+    if (url === '/api/qr/upload-image') return upload;
+    if (url === '/api/qr-codes') return { ok: true, json: async () => [saved] };
+    if (url.endsWith('/stats')) return { ok: true, json: async () => ({}) };
+    if (options?.method === 'PATCH') return { ok: true, json: async () => saved };
+    return { ok: true, json: async () => ({ qr: saved, auditEvents: [] }) };
+  });
+  vi.stubGlobal('fetch', fetchMock); vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
+  URL.createObjectURL = vi.fn(() => 'blob:preview');
+  const container = document.createElement('div'); document.body.append(container); const root = createRoot(container);
+  const flush = async () => { await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); }); };
+  const click = async (text: string) => { const button = [...container.querySelectorAll('button')].find((item) => item.textContent?.includes(text))!; await act(async () => { button.click(); }); await flush(); };
+  try {
+    await act(async () => { root.render(React.createElement(App)); }); await flush();
+    await click('Saved example');
+    const input = container.querySelector('input[type=file]') as HTMLInputElement;
+    Object.defineProperty(input, 'files', { configurable: true, value: [new File(['logo'], 'logo.png', { type: 'image/png' })] });
+    await act(async () => { input.dispatchEvent(new Event('change', { bubbles: true })); });
+    expect([...container.querySelectorAll('button')].find((b) => b.textContent?.includes('Save new QR'))?.disabled).toBe(true);
+    await click('Edit QR');
+    await act(async () => { resolveUpload({ ok: true, json: async () => ({ file: '/uploads/stale.png' }) }); }); await flush();
+    await click('Update saved QR');
+    const patch = fetchMock.mock.calls.find(([, options]) => options?.method === 'PATCH');
+    expect(JSON.parse(String(patch?.[1]?.body)).designConfig.logo).toBe('#facebook');
+  } finally { await act(async () => { root.unmount(); }); }
+});
+
+it('serializes saves across navigation and clears the saved keyword when creating', async () => {
+  const saved = { ...record, yourlsKeyword: 'printed' };
+  let resolvePatch!: (value: unknown) => void;
+  const pending = new Promise((resolve) => { resolvePatch = resolve; });
+  const mutations: Array<{ method: string; body: any }> = [];
+  const fetchMock = vi.fn(async (url: string, options?: RequestInit) => {
+    if (url === '/api/qr/custom') return { ok: true, blob: async () => new Blob(['svg']) };
+    if (url.endsWith('/stats')) return { ok: true, json: async () => ({}) };
+    if (options?.method === 'PATCH' || options?.method === 'POST') {
+      mutations.push({ method: options.method, body: JSON.parse(String(options.body)) });
+      if (options.method === 'PATCH') return pending;
+      return { ok: true, json: async () => ({ ...saved, id: 'new' }) };
+    }
+    if (url === '/api/qr-codes') return { ok: true, json: async () => [saved] };
+    return { ok: true, json: async () => ({ qr: saved, auditEvents: [] }) };
+  });
+  vi.stubGlobal('fetch', fetchMock); vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
+  URL.createObjectURL = vi.fn(() => 'blob:preview');
+  const container = document.createElement('div'); document.body.append(container); const root = createRoot(container);
+  const flush = async () => { await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); }); };
+  const button = (text: string) => [...container.querySelectorAll('button')].find((item) => item.textContent?.includes(text))!;
+  const click = async (text: string) => { await act(async () => { button(text).click(); }); await flush(); };
+  try {
+    await act(async () => { root.render(React.createElement(App)); }); await flush();
+    await click('Saved example'); await click('Edit QR'); await click('Update saved QR');
+    expect(mutations).toHaveLength(1);
+    expect(mutations[0].body.keyword).toBe('printed');
+    await click('Cancel editing');
+    expect(button('Save new QR').disabled).toBe(true);
+    await click('Save new QR');
+    expect(mutations).toHaveLength(1);
+    await act(async () => { resolvePatch({ ok: true, json: async () => saved }); }); await flush();
+    await click('Save new QR');
+    expect(mutations.map((m) => m.method)).toEqual(['PATCH', 'POST']);
+    expect(mutations[1].body.keyword).toBeUndefined();
+    await click('Edit QR'); await click('text');
+    expect((container.querySelector('input[placeholder=optional]') as HTMLInputElement).value).toBe('');
+  } finally { await act(async () => { root.unmount(); }); }
+});
+
+it('does not send a newer patch until the previous server mutation completes', async () => {
+  let finishFirst!: () => void;
+  const first = new Promise<void>((resolve) => { finishFirst = resolve; });
+  let server = { ...record };
+  const sent: string[] = [];
+  const completed: string[] = [];
+  vi.stubGlobal('fetch', vi.fn(async (url: string, options?: RequestInit) => {
+    if (url === '/api/qr/custom') return { ok: true, blob: async () => new Blob(['svg']) };
+    if (url === '/api/qr-codes') return { ok: true, json: async () => [server] };
+    if (url.endsWith('/stats')) return { ok: true, json: async () => ({}) };
+    if (options?.method === 'PATCH') {
+      const body = JSON.parse(String(options.body));
+      sent.push(body.name);
+      if (sent.length === 1) await first;
+      server = { ...server, ...body }; completed.push(body.name);
+      return { ok: true, json: async () => server };
+    }
+    return { ok: true, json: async () => ({ qr: server, auditEvents: [] }) };
+  }));
+  vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true); URL.createObjectURL = vi.fn(() => 'blob:preview');
+  const container = document.createElement('div'); document.body.append(container); const root = createRoot(container);
+  const flush = async () => { await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); }); };
+  const button = (text: string) => [...container.querySelectorAll('button')].find((item) => item.textContent?.includes(text))!;
+  const click = async (text: string) => { await act(async () => { button(text).click(); }); await flush(); };
+  const setName = async (value: string) => {
+    const input = container.querySelector('input[value="Saved example"]') as HTMLInputElement;
+    await act(async () => { Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input, value); input.dispatchEvent(new Event('input', { bubbles: true })); });
+  };
+  try {
+    await act(async () => { root.render(React.createElement(App)); }); await flush();
+    await click('Saved example'); await click('Edit QR'); await click('Update saved QR');
+    await setName('Newer name');
+    expect(button('Update saved QR').disabled).toBe(true);
+    await click('Update saved QR');
+    expect(sent).toEqual(['Saved example']); expect(completed).toEqual([]);
+    await act(async () => { finishFirst(); }); await flush();
+    await click('Update saved QR');
+    expect(sent).toEqual(['Saved example', 'Newer name']);
+    expect(completed).toEqual(['Saved example', 'Newer name']);
+    expect(server.name).toBe('Newer name');
+  } finally { await act(async () => { root.unmount(); }); }
+});

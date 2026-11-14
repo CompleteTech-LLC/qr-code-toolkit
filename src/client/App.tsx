@@ -29,7 +29,10 @@ export function App() {
   const uploadRequest = useRef(0);
   const saveRequest = useRef(0);
   const editingId = useRef<string | null>(null);
-  const invalidateNavigation = () => { detailRequest.current++; saveRequest.current++; uploadRequest.current++; editingId.current = null; };
+  const savePendingRef = useRef(false);
+  const [savePending, setSavePending] = useState(false);
+  const [uploadPending, setUploadPending] = useState(false);
+  const invalidateNavigation = () => { detailRequest.current++; saveRequest.current++; uploadRequest.current++; setUploadPending(false); editingId.current = null; setKeyword(''); };
   const [records, setRecords] = useState<QrRecord[]>([]);
   const [selected, setSelected] = useState<QrRecord | null>(null);
   const [auditEvents, setAuditEvents] = useState<AuditEvent[]>([]);
@@ -67,6 +70,9 @@ export function App() {
   }
 
   async function saveQr() {
+    if (savePendingRef.current || uploadPending) return;
+    savePendingRef.current = true;
+    setSavePending(true);
     const request = ++saveRequest.current;
     const id = editingId.current;
     try {
@@ -83,6 +89,9 @@ export function App() {
       if (request === saveRequest.current) await loadRecords();
     } catch (err) {
       if (request === saveRequest.current) setError('save', err instanceof Error ? err.message : 'Save failed');
+    } finally {
+      savePendingRef.current = false;
+      setSavePending(false);
     }
   }
 
@@ -119,8 +128,12 @@ export function App() {
 
   async function editRecord(id: string) {
     saveRequest.current++;
+    uploadRequest.current++;
+    setUploadPending(false);
     const record = await loadDetail(id);
     if (!record) return;
+    uploadRequest.current++;
+    setUploadPending(false);
     editingId.current = record.id;
     setType(record.contentType);
     setMode(record.mode);
@@ -135,6 +148,7 @@ export function App() {
   async function uploadLogo(file?: File) {
     if (!file) return;
     const request = ++uploadRequest.current;
+    setUploadPending(true);
     const form = new FormData();
     form.set('file', file);
     try {
@@ -146,6 +160,8 @@ export function App() {
       setError('upload', '');
     } catch (err) {
       if (request === uploadRequest.current) setError('upload', err instanceof Error ? err.message : 'Upload failed');
+    } finally {
+      if (request === uploadRequest.current) setUploadPending(false);
     }
   }
 
@@ -238,7 +254,7 @@ export function App() {
                   <input type="checkbox" checked={design.logoMode === 'clean'} onChange={(event) => setDesign({ ...design, logoMode: event.target.checked ? 'clean' : 'default' })} />
                   <span>Remove background behind logo</span>
                 </label>
-                <button className="btn btn-secondary" onClick={() => { uploadRequest.current++; setDesign({ ...design, logo: null }); }}>Remove logo</button>
+                <button className="btn btn-secondary" onClick={() => { uploadRequest.current++; setUploadPending(false); setDesign({ ...design, logo: null }); }}>Remove logo</button>
               </div>
               <div className="shape-list">
                 {logoGallery.map((logo) => (
@@ -246,7 +262,7 @@ export function App() {
                     key={logo}
                     name={logo}
                     active={design.logo === `#${logo}`}
-                    onClick={() => { uploadRequest.current++; setDesign({ ...design, logo: `#${logo}` }); }}
+                    onClick={() => { uploadRequest.current++; setUploadPending(false); setDesign({ ...design, logo: `#${logo}` }); }}
                   />
                 ))}
               </div>
@@ -275,7 +291,7 @@ export function App() {
             <Panel eyebrow="TEMPLATES" title="Presets" icon={<QrCode size={16} aria-hidden />}>
               <div className="template-list">
                 {templates.map((template) => (
-                  <button key={template.name} className="chip" onClick={() => { uploadRequest.current++; setDesign(template.config); }}>{template.name}</button>
+                  <button key={template.name} className="chip" onClick={() => { uploadRequest.current++; setUploadPending(false); setDesign(template.config); }}>{template.name}</button>
                 ))}
               </div>
             </Panel>
@@ -293,7 +309,7 @@ export function App() {
             {Object.entries(errors).filter(([, message]) => message).map(([operation, message]) => <div key={operation} className="error" role="alert">{message}</div>)}
             <div className="actions">
               <button className="btn btn-secondary" onClick={refreshPreview}><RefreshCw size={14} aria-hidden /> Preview</button>
-              <button className="btn btn-primary" onClick={saveQr}><Save size={14} aria-hidden /> {editing ? 'Update saved QR' : 'Save new QR'}</button>
+              <button className="btn btn-primary" onClick={saveQr} disabled={savePending || uploadPending}><Save size={14} aria-hidden /> {editing ? 'Update saved QR' : 'Save new QR'}</button>
               {editing && <button className="btn btn-secondary" onClick={() => { invalidateNavigation(); setEditing(false); }}>Cancel editing</button>}
               <a className="btn btn-secondary" href={`/api/qr/custom?data=${encodeURIComponent(downloadData)}&size=${size}&file=png&download=true&config=${encodeURIComponent(JSON.stringify(design))}`}><Download size={14} aria-hidden /> PNG</a>
               {selected && <a className="btn btn-secondary" href={`/api/qr-codes/${selected.id}/render?file=svg`}><Download size={14} aria-hidden /> SVG</a>}
@@ -316,7 +332,7 @@ export function App() {
             </button>
           ))}
         </div>
-        {selected && <SelectedRecord record={selected} auditEvents={auditEvents} edit={() => void editRecord(selected.id)} reload={() => loadDetail(selected.id)} />}
+        {selected && <SelectedRecord record={selected} auditEvents={auditEvents} savePending={savePending} edit={() => void editRecord(selected.id)} reload={() => loadDetail(selected.id)} />}
       </section>
     </main>
   );
@@ -387,7 +403,7 @@ function PayloadEditor({ type, payload, setPayload }: { type: ContentType; paylo
   );
 }
 
-function SelectedRecord({ record, auditEvents, edit, reload }: { record: QrRecord; auditEvents: AuditEvent[]; edit: () => void; reload: () => Promise<QrRecord | null> }) {
+function SelectedRecord({ record, auditEvents, savePending, edit, reload }: { record: QrRecord; auditEvents: AuditEvent[]; savePending: boolean; edit: () => void; reload: () => Promise<QrRecord | null> }) {
   const [stats, setStats] = useState<Record<string, unknown> | null>(null);
   useEffect(() => {
     let active = true;
@@ -405,7 +421,7 @@ function SelectedRecord({ record, auditEvents, edit, reload }: { record: QrRecor
         <dt>Encoded payload</dt><dd>{record.encodedPayload}</dd>
         <dt>Stats</dt><dd>{JSON.stringify(stats)}</dd>
       </dl>
-      <button className="btn btn-secondary" onClick={edit}>Edit QR</button>
+      <button className="btn btn-secondary" onClick={edit} disabled={savePending}>Edit QR</button>
       <button className="btn btn-secondary" onClick={() => void reload()}>Refresh record</button>
       <h4>Audit history</h4>
       {auditEvents.length === 0 ? <p>No audit events.</p> : <ul>{auditEvents.map((event) => (
