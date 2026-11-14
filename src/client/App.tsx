@@ -29,20 +29,22 @@ export function App() {
   const uploadRequest = useRef(0);
   const saveRequest = useRef(0);
   const editingId = useRef<string | null>(null);
+  const editLoadingRef = useRef(false);
+  const [editLoading, setEditLoading] = useState(false);
   const savePendingRef = useRef(false);
   const [savePending, setSavePending] = useState(false);
   const [uploadPending, setUploadPending] = useState(false);
-  const invalidateNavigation = () => { detailRequest.current++; saveRequest.current++; uploadRequest.current++; setUploadPending(false); editingId.current = null; setKeyword(''); };
+  const invalidateNavigation = () => { detailRequest.current++; saveRequest.current++; uploadRequest.current++; setUploadPending(false); editLoadingRef.current = false; setEditLoading(false); editingId.current = null; setKeyword(''); };
   const [records, setRecords] = useState<QrRecord[]>([]);
   const [selected, setSelected] = useState<QrRecord | null>(null);
   const [auditEvents, setAuditEvents] = useState<AuditEvent[]>([]);
-  const [editing, setEditing] = useState(false);
+  const [editing, setEditing] = useState<QrRecord | null>(null);
 
   const encodedPayload = useMemo(() => JSON.stringify(payload, null, 2), [payload]);
 
   useEffect(() => {
     void refreshPreview();
-  }, [type, payload, design, size, editing, selected?.encodedPayload]);
+  }, [type, payload, design, size, editing]);
 
   useEffect(() => {
     void loadRecords();
@@ -51,7 +53,7 @@ export function App() {
   async function refreshPreview() {
     const request = ++previewRequest.current;
     try {
-      const data = editing && selected && selected.mode !== 'static' ? selected.encodedPayload : await buildPreviewPayload(type, payload);
+      const data = editing && editing.mode !== 'static' ? editing.encodedPayload : await buildPreviewPayload(type, payload);
       if (request !== previewRequest.current) return;
       setDownloadData(data);
       const response = await fetch('/api/qr/custom', {
@@ -70,7 +72,7 @@ export function App() {
   }
 
   async function saveQr() {
-    if (savePendingRef.current || uploadPending) return;
+    if (savePendingRef.current || uploadPending || editLoadingRef.current) return;
     savePendingRef.current = true;
     setSavePending(true);
     const request = ++saveRequest.current;
@@ -85,8 +87,11 @@ export function App() {
       const qr = (await response.json()) as QrRecord;
       if (request !== saveRequest.current) return;
       setError('save', '');
-      await loadDetail(qr.id);
-      if (request === saveRequest.current) await loadRecords();
+      const detail = await loadDetail(qr.id);
+      if (request === saveRequest.current) {
+        if (id && detail && detail.id === id) setEditing(detail);
+        await loadRecords();
+      }
     } catch (err) {
       if (request === saveRequest.current) setError('save', err instanceof Error ? err.message : 'Save failed');
     } finally {
@@ -127,10 +132,17 @@ export function App() {
   }
 
   async function editRecord(id: string) {
+    if (editLoadingRef.current || savePendingRef.current) return;
+    editLoadingRef.current = true;
+    setEditLoading(true);
     saveRequest.current++;
     uploadRequest.current++;
     setUploadPending(false);
+    const request = detailRequest.current + 1;
     const record = await loadDetail(id);
+    if (request !== detailRequest.current) return;
+    editLoadingRef.current = false;
+    setEditLoading(false);
     if (!record) return;
     uploadRequest.current++;
     setUploadPending(false);
@@ -142,7 +154,7 @@ export function App() {
     setDesign(record.designConfig);
     setSize(record.sizePx);
     setKeyword(record.yourlsKeyword || '');
-    setEditing(true);
+    setEditing(record);
   }
 
   async function uploadLogo(file?: File) {
@@ -186,7 +198,7 @@ export function App() {
 
         <nav className="type-strip" aria-label="Content type">
           {[...contentTypes, ...moreTypes].map((item) => (
-            <button key={item} className={type === item ? 'chip active' : 'chip'} onClick={() => { invalidateNavigation(); setType(item); setPayload(defaults[item]); if (moreTypes.includes(item)) setMode('dynamic_payload'); setEditing(false); }}>
+            <button key={item} className={type === item ? 'chip active' : 'chip'} onClick={() => { invalidateNavigation(); setType(item); setPayload(defaults[item]); if (moreTypes.includes(item)) setMode('dynamic_payload'); setEditing(null); }}>
               {item}
             </button>
           ))}
@@ -202,7 +214,7 @@ export function App() {
                 </label>
                 <label className="field">
                   <span className="field-label">Mode</span>
-                  <select value={mode} onChange={(event) => setMode(event.target.value as QrMode)} disabled={editing || moreTypes.includes(type)}>
+                  <select value={mode} onChange={(event) => setMode(event.target.value as QrMode)} disabled={!!editing || moreTypes.includes(type)}>
                     <option value="static">Static</option>
                     <option value="dynamic_url">Dynamic URL</option>
                     <option value="dynamic_payload">Dynamic payload</option>
@@ -210,7 +222,7 @@ export function App() {
                 </label>
                 <label className="field">
                   <span className="field-label">YOURLS keyword</span>
-                  <input value={keyword} onChange={(event) => setKeyword(event.target.value)} placeholder="optional" disabled={editing || mode === 'static'} />
+                  <input value={keyword} onChange={(event) => setKeyword(event.target.value)} placeholder="optional" disabled={!!editing || mode === 'static'} />
                 </label>
               </div>
               <PayloadEditor type={type} payload={payload} setPayload={setPayload} />
@@ -309,12 +321,12 @@ export function App() {
             {Object.entries(errors).filter(([, message]) => message).map(([operation, message]) => <div key={operation} className="error" role="alert">{message}</div>)}
             <div className="actions">
               <button className="btn btn-secondary" onClick={refreshPreview}><RefreshCw size={14} aria-hidden /> Preview</button>
-              <button className="btn btn-primary" onClick={saveQr} disabled={savePending || uploadPending}><Save size={14} aria-hidden /> {editing ? 'Update saved QR' : 'Save new QR'}</button>
-              {editing && <button className="btn btn-secondary" onClick={() => { invalidateNavigation(); setEditing(false); }}>Cancel editing</button>}
+              <button className="btn btn-primary" onClick={saveQr} disabled={savePending || uploadPending || editLoading}><Save size={14} aria-hidden /> {editing ? 'Update saved QR' : 'Save new QR'}</button>
+              {editing && <button className="btn btn-secondary" onClick={() => { invalidateNavigation(); setEditing(null); }}>Cancel editing</button>}
               <a className="btn btn-secondary" href={`/api/qr/custom?data=${encodeURIComponent(downloadData)}&size=${size}&file=png&download=true&config=${encodeURIComponent(JSON.stringify(design))}`}><Download size={14} aria-hidden /> PNG</a>
               {selected && <a className="btn btn-secondary" href={`/api/qr-codes/${selected.id}/render?file=svg`}><Download size={14} aria-hidden /> SVG</a>}
             </div>
-            <p className="note">{editing ? `Editing ${selected?.name}. ` : ''}Changing a dynamic destination keeps the printed QR working. Changing a static payload requires printing the new QR. Design changes require a new print to show the new design.</p>
+            <p className="note">{editing ? `Editing ${editing.name}. ` : ''}Changing a dynamic destination keeps the printed QR working. Changing a static payload requires printing the new QR. Design changes require a new print to show the new design.</p>
             <p className="note">SVG downloads use the selected saved design. Save your edits first to include them. PNG uses standard square modules and foreground/background colors; shapes, eye colors, gradients, and logos are SVG-only. PDF and EPS export are unavailable.</p>
           </aside>
         </section>
@@ -325,14 +337,14 @@ export function App() {
         <h2><Archive size={18} aria-hidden /> Saved QR codes</h2>
         <div className="records">
           {records.map((record) => (
-            <button key={record.id} className={selected?.id === record.id ? 'record active' : 'record'} onClick={() => { invalidateNavigation(); setEditing(false); void loadDetail(record.id); }}>
+            <button key={record.id} className={selected?.id === record.id ? 'record active' : 'record'} onClick={() => { invalidateNavigation(); setEditing(null); void loadDetail(record.id); }}>
               <span className="record-name">{record.name}</span>
               <small className="record-meta">{record.contentType} · {record.mode}</small>
               <small className="record-payload">{record.yourlsShortUrl || record.encodedPayload.slice(0, 60)}</small>
             </button>
           ))}
         </div>
-        {selected && <SelectedRecord record={selected} auditEvents={auditEvents} savePending={savePending} edit={() => void editRecord(selected.id)} reload={() => loadDetail(selected.id)} />}
+        {selected && <SelectedRecord record={selected} auditEvents={auditEvents} savePending={savePending || editLoading} edit={() => void editRecord(selected.id)} reload={() => editLoadingRef.current ? Promise.resolve(null) : loadDetail(selected.id)} />}
       </section>
     </main>
   );
