@@ -288,3 +288,93 @@ it('releases the edit loading guard on failure and ignores detail after navigati
     expect(button('Save new QR').disabled).toBe(false);
   } finally { await act(async () => { root.unmount(); }); }
 });
+
+it.each(['a', 'b'])('refreshes a completed patch after navigation to %s without replacing the draft', async (destination) => {
+  const a = { ...record, id: 'a', name: 'Record A' };
+  const b = { ...record, id: 'b', name: 'Record B' };
+  const updated = { ...a, name: 'Renamed A', updatedAt: '2026-01-02' };
+  let serverA = a;
+  let finishPatch!: () => void;
+  const patch = new Promise<void>((resolve) => { finishPatch = resolve; });
+  let finishStaleDetail!: (value: unknown) => void;
+  const staleDetail = new Promise((resolve) => { finishStaleDetail = resolve; });
+  let aDetails = 0;
+  let listCalls = 0;
+  vi.stubGlobal('fetch', vi.fn(async (url: string, options?: RequestInit) => {
+    if (url === '/api/qr/custom') return { ok: true, blob: async () => new Blob(['svg']) };
+    if (url.endsWith('/stats')) return { ok: true, json: async () => ({}) };
+    if (options?.method === 'PATCH') { await patch; serverA = updated; return { ok: true, json: async () => updated }; }
+    if (url === '/api/qr-codes') {
+      if (++listCalls === 1) return { ok: true, json: async () => [a, b] };
+      return { ok: true, json: async () => [serverA, b] };
+    }
+    if (url === '/api/qr-codes/a') {
+      if (++aDetails === 3) return staleDetail;
+      return { ok: true, json: async () => ({ qr: serverA, auditEvents: serverA === updated ? [{ id: 'updated', eventType: 'updated' }] : [] }) };
+    }
+    return { ok: true, json: async () => ({ qr: b, auditEvents: [] }) };
+  }));
+  vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true); URL.createObjectURL = vi.fn(() => 'blob:preview');
+  const container = document.createElement('div'); document.body.append(container); const root = createRoot(container);
+  const flush = async () => { await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); }); };
+  const click = async (text: string) => { const button = [...container.querySelectorAll('button')].find((item) => item.textContent?.includes(text))!; await act(async () => { button.click(); }); await flush(); };
+  const setName = async (value: string) => { const input = container.querySelector('input[value="Record A"]') as HTMLInputElement; await act(async () => { Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input, value); input.dispatchEvent(new Event('input', { bubbles: true })); }); };
+  try {
+    await act(async () => { root.render(React.createElement(App)); }); await flush();
+    await click('Record A'); await click('Edit QR'); await setName('Renamed A'); await click('Update saved QR');
+    await click('Record A');
+    if (destination === 'b') await click('Record B');
+    await act(async () => { finishPatch(); }); await flush();
+    expect(container.querySelector('.record')?.textContent).toContain('Renamed A');
+    expect(container.querySelector('.selected h3')?.textContent).toBe(destination === 'a' ? 'Renamed A' : 'Record B');
+    expect((container.querySelector('input[value="Renamed A"]') as HTMLInputElement)?.value).toBe('Renamed A');
+    await act(async () => { finishStaleDetail({ ok: true, json: async () => ({ qr: a, auditEvents: [] }) }); }); await flush();
+    expect(container.querySelector('.selected h3')?.textContent).toBe(destination === 'a' ? 'Renamed A' : 'Record B');
+  } finally { await act(async () => { root.unmount(); }); }
+});
+
+it('ignores an older list response after a successful creation refresh', async () => {
+  let resolveOld!: (value: unknown) => void;
+  const oldList = new Promise((resolve) => { resolveOld = resolve; });
+  let lists = 0;
+  vi.stubGlobal('fetch', vi.fn(async (url: string, options?: RequestInit) => {
+    if (url === '/api/qr/custom') return { ok: true, blob: async () => new Blob(['svg']) };
+    if (url.endsWith('/stats')) return { ok: true, json: async () => ({}) };
+    if (options?.method === 'POST') return { ok: true, json: async () => record };
+    if (url === '/api/qr-codes') return ++lists === 1 ? oldList : { ok: true, json: async () => [record] };
+    return { ok: true, json: async () => ({ qr: record, auditEvents: [] }) };
+  }));
+  vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true); URL.createObjectURL = vi.fn(() => 'blob:preview');
+  const container = document.createElement('div'); document.body.append(container); const root = createRoot(container);
+  const flush = async () => { await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); }); };
+  try {
+    await act(async () => { root.render(React.createElement(App)); }); await flush();
+    const save = [...container.querySelectorAll('button')].find((item) => item.textContent?.includes('Save new QR'))!;
+    await act(async () => { save.click(); }); await flush();
+    expect(container.querySelector('.record')?.textContent).toContain('Saved example');
+    await act(async () => { resolveOld({ ok: true, json: async () => [] }); }); await flush();
+    expect(container.querySelector('.record')?.textContent).toContain('Saved example');
+  } finally { await act(async () => { root.unmount(); }); }
+});
+
+it('reports a failed list refresh while still refreshing detail after a successful patch', async () => {
+  const updated = { ...record, name: 'Updated record' };
+  let saved = false;
+  vi.stubGlobal('fetch', vi.fn(async (url: string, options?: RequestInit) => {
+    if (url === '/api/qr/custom') return { ok: true, blob: async () => new Blob(['svg']) };
+    if (url.endsWith('/stats')) return { ok: true, json: async () => ({}) };
+    if (options?.method === 'PATCH') { saved = true; return { ok: true, json: async () => updated }; }
+    if (url === '/api/qr-codes') return saved ? { ok: false, status: 500 } : { ok: true, json: async () => [record] };
+    return { ok: true, json: async () => ({ qr: saved ? updated : record, auditEvents: [] }) };
+  }));
+  vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true); URL.createObjectURL = vi.fn(() => 'blob:preview');
+  const container = document.createElement('div'); document.body.append(container); const root = createRoot(container);
+  const flush = async () => { await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); }); };
+  const click = async (text: string) => { const button = [...container.querySelectorAll('button')].find((item) => item.textContent?.includes(text))!; await act(async () => { button.click(); }); await flush(); };
+  try {
+    await act(async () => { root.render(React.createElement(App)); }); await flush();
+    await click('Saved example'); await click('Edit QR'); await click('Update saved QR');
+    expect(container.querySelector('.selected h3')?.textContent).toBe('Updated record');
+    expect(container.textContent).toContain('Could not load saved QR codes');
+  } finally { await act(async () => { root.unmount(); }); }
+});

@@ -24,6 +24,7 @@ export function App() {
   const [errors, setErrors] = useState<Record<string, string>>({});
   const setError = (operation: string, message: string) => setErrors((current) => ({ ...current, [operation]: message }));
   const detailRequest = useRef(0);
+  const detailTarget = useRef<string | null>(null);
   const previewRequest = useRef(0);
   const recordsRequest = useRef(0);
   const uploadRequest = useRef(0);
@@ -84,14 +85,24 @@ export function App() {
         body: JSON.stringify({ name, mode, contentType: type, contentPayload: payload, designConfig: design, sizePx: size, keyword: keyword || undefined })
       });
       if (!response.ok) throw new Error((await response.json()).error || 'Save failed');
-      const qr = (await response.json()) as QrRecord;
-      if (request !== saveRequest.current) return;
-      setError('save', '');
-      const detail = await loadDetail(qr.id);
+      // A navigation may make the save's UI effects obsolete, but the server
+      // mutation still changes the list and invalidates older list requests.
+      const recordsRefresh = loadRecords();
+      let qr: QrRecord;
+      try {
+        qr = (await response.json()) as QrRecord;
+      } catch (err) {
+        // PATCH already identifies the changed record even if its response is unreadable.
+        if (id && (request === saveRequest.current || detailTarget.current === id)) void loadDetail(id);
+        throw err;
+      }
+      if (request === saveRequest.current) setError('save', '');
+      const shouldLoadDetail = request === saveRequest.current || detailTarget.current === qr.id;
+      const detail = shouldLoadDetail ? await loadDetail(qr.id) : null;
       if (request === saveRequest.current) {
         if (id && detail && detail.id === id) setEditing(detail);
-        await loadRecords();
       }
+      await recordsRefresh;
     } catch (err) {
       if (request === saveRequest.current) setError('save', err instanceof Error ? err.message : 'Save failed');
     } finally {
@@ -115,6 +126,7 @@ export function App() {
   }
 
   async function loadDetail(id: string) {
+    detailTarget.current = id;
     const request = ++detailRequest.current;
     try {
       const response = await fetch(`/api/qr-codes/${id}`);
